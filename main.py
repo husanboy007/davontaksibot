@@ -20,23 +20,21 @@ from aiogram.fsm.state import StatesGroup, State
 from fastapi import FastAPI, Request
 import uvicorn
 
-
-# ======================= ENV / CONFIG =======================
+# ================== ENV ==================
 load_dotenv()
-
 BOT_TOKEN     = os.getenv("BOT_TOKEN")
 ADMIN_PHONE   = os.getenv("ADMIN_PHONE", "+998901234567")
-ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID")          # ixtiyoriy (user ID yoki kanal ID)
-WEBHOOK_URL   = os.getenv("WEBHOOK_URL")            # masalan: https://davontaksibot-3.onrender.com
+ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID")  # ixtiyoriy (user ID yoki kanal ID)
+WEBHOOK_URL   = os.getenv("WEBHOOK_URL")    # masalan: https://davontaksibot-3.onrender.com
 
 if not BOT_TOKEN:
-    raise RuntimeError("BOT_TOKEN yo'q. Render > Environment’da BOT_TOKEN qo‘shing.")
+    raise RuntimeError("BOT_TOKEN yo'q! Render Environment Variablesga qo'shing.")
 
+# ================== LOGGING ==================
 logging.basicConfig(level=logging.INFO)
-log = logging.getLogger("davon-taksi-bot")
+log = logging.getLogger("davon-taxi-bot")
 
-
-# ======================= DATABASE ===========================
+# ================== DB ==================
 DB_PATH = "orders.db"
 
 def init_db():
@@ -58,24 +56,24 @@ def init_db():
             created_at INTEGER
         );
         """)
+
 init_db()
 
-
-# ======================= BOT / FSM ==========================
+# ================== BOT / DP ==================
 bot = Bot(BOT_TOKEN)
 dp  = Dispatcher(storage=MemoryStorage())
 
+# ================== STATES ==================
 class OrderForm(StatesGroup):
     phone         = State()
     route_from    = State()
     from_district = State()
     route_to      = State()
     to_district   = State()
-    choice        = State()
-    note          = State()
+    choice        = State()   # odam soni yoki "pochta bor"
+    note          = State()   # faqat odam tanlanganda
 
-
-# ======================= KEYBOARDS ==========================
+# ================== KEYBOARDS ==================
 BACK = "🔙 Орқага"
 
 def kb_request_phone():
@@ -90,38 +88,36 @@ def kb_request_phone():
 CITIES = ["Тошкент", "Қўқон"]  # faqat shu ikkitasi
 
 def kb_cities():
-    return ReplyKeyboardMarkup(
-        keyboard=[
-            [KeyboardButton(text="Тошкент")],
-            [KeyboardButton(text="Қўқон")],
-            [KeyboardButton(text=BACK)],
-        ],
-        resize_keyboard=True
-    )
+    rows = [
+        [KeyboardButton(text="Тошкент")],
+        [KeyboardButton(text="Қўқон")],
+        [KeyboardButton(text=BACK)],
+    ]
+    return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
 
 def kb_choice():
-    return ReplyKeyboardMarkup(
-        keyboard=[
-            [KeyboardButton(text="1"), KeyboardButton(text="2"), KeyboardButton(text="3")],
-            [KeyboardButton(text="4"), KeyboardButton(text="5+")],
-            [KeyboardButton(text="📦 Почта бор")],   # "Фақат юк" o‘rniga
-            [KeyboardButton(text=BACK)],
-        ],
-        resize_keyboard=True
-    )
+    rows = [
+        [KeyboardButton(text="1"), KeyboardButton(text="2"), KeyboardButton(text="3")],
+        [KeyboardButton(text="4"), KeyboardButton(text="5+")],
+        [KeyboardButton(text="📦 Почта бор")],  # "Фақат юк" o‘rniga
+        [KeyboardButton(text=BACK)],
+    ]
+    return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
 
 def kb_back_only():
     return ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text=BACK)]], resize_keyboard=True)
 
-
-# ======================= VALIDATION =========================
+# ================== VALIDATORS ==================
 PHONE_RE = re.compile(r"^\+?\d{7,15}$")
 
 def normalize_phone(s: str) -> str:
     s = (s or "").strip().replace(" ", "")
-    if s.startswith("00"): s = "+" + s[2:]
-    if s.startswith("998") and len(s) == 12: s = "+" + s
-    if not s.startswith("+") and s.isdigit(): s = "+" + s
+    if s.startswith("00"):
+        s = "+" + s[2:]
+    if s.startswith("998") and len(s) == 12:
+        s = "+" + s
+    if not s.startswith("+") and s.isdigit():
+        s = "+" + s
     return s
 
 def is_valid_phone(s: str) -> bool:
@@ -138,19 +134,25 @@ def people_to_int(s: str):
     return 5 if s.endswith("+") else int(s)
 
 def trim_note(s: str) -> str | None:
-    if s is None: return None
+    if s is None:
+        return None
     s = s.strip()
-    if not s: return None
-    if len(s) > 350: return None
+    if not s:
+        return None
+    if len(s) > 350:
+        return None
     return s
 
 def trim_district(s: str) -> str | None:
-    if s is None: return None
+    if s is None:
+        return None
     s = s.strip()
-    return s if 2 <= len(s) <= 60 else None
+    # sodda tekshiruv: 2..60 belgi
+    if 2 <= len(s) <= 60:
+        return s
+    return None
 
-
-# ======================= SAVE / NOTIFY ======================
+# ================== SAVE / NOTIFY ==================
 async def save_order_safe(m: Message, data: dict):
     try:
         with closing(sqlite3.connect(DB_PATH)) as conn, conn:
@@ -196,7 +198,6 @@ async def finalize(m: Message, state: FSMContext):
     data = await state.get_data()
     await save_order_safe(m, data)
     await notify_operator_safe(m, data)
-
     confirm = (
         "✅ Буюртма қабул қилинди!\n\n"
         f"📞 Телефон: {data.get('phone')}\n"
@@ -211,8 +212,7 @@ async def finalize(m: Message, state: FSMContext):
     await m.answer(confirm, reply_markup=ReplyKeyboardRemove())
     await state.clear()
 
-
-# ======================= HANDLERS ===========================
+# ================== HANDLERS ==================
 @dp.message(CommandStart())
 async def cmd_start(m: Message, state: FSMContext):
     await state.clear()
@@ -278,7 +278,7 @@ async def from_district_step(m: Message, state: FSMContext):
         return
     dist = trim_district(txt)
     if dist is None:
-        await m.answer("❗️ Туман номи 2–60 белгидан иборат бўлсин. Қайта киритинг.", reply_markup=kb_back_only())
+        await m.answer("❗️ Туман номи 2–60 белгидан iborat bo‘lsin. Қайта киритинг.", reply_markup=kb_back_only())
         return
     await state.update_data(from_district=dist)
     await m.answer("📍 Қаерга борасиз? Шаҳарни танланг.", reply_markup=kb_cities())
@@ -313,13 +313,13 @@ async def to_district_step(m: Message, state: FSMContext):
         return
     dist = trim_district(txt)
     if dist is None:
-        await m.answer("❗️ Туман номи 2–60 белгидан иборат бўлсин. Қайта киритинг.", reply_markup=kb_back_only())
+        await m.answer("❗️ Туман номи 2–60 белгидан iborat bo‘lsin. Қайта киритинг.", reply_markup=kb_back_only())
         return
     await state.update_data(to_district=dist)
     await m.answer("👥 Одам сонини танланг ёки «📦 Почта бор» ни босинг:", reply_markup=kb_choice())
     await state.set_state(OrderForm.choice)
 
-# 6) Choice
+# 6) Choice: people or cargo
 @dp.message(OrderForm.choice)
 async def choice_step(m: Message, state: FSMContext):
     txt = (m.text or "").strip()
@@ -364,51 +364,37 @@ async def note_step(m: Message, state: FSMContext):
     await state.update_data(note=note)
     await finalize(m, state)
 
-
-# ======================= FASTAPI (WEBHOOK) ==================
+# ================== FASTAPI (webhook) ==================
 app = FastAPI()
 
 @app.get("/")
-def root():
+def home():
     return {"status": "ok", "service": "davon-taksi-bot"}
 
 @app.get("/health")
 def health():
     return {"ok": True}
 
-# GET test va POST real webhook uchun; trailing slash bilan ham ishlasin
-@app.api_route("/webhook", methods=["GET", "POST"])
-@app.api_route("/webhook/", methods=["GET", "POST"])
+@app.post("/webhook")
 async def telegram_webhook(request: Request):
-    if request.method == "GET":
-        return {"ok": True}
-    data = await request.json()
-    update = Update(**data)
-    await dp.feed_update(bot, update)
+    try:
+        data = await request.json()
+        update = Update(**data)
+        await dp.feed_update(bot, update)
+    except Exception as e:
+        log.exception("Webhook error: %s", e)
     return {"ok": True}
-
-# Webhookni qo'lda o‘rnatish uchun qulay endpoint
-@app.post("/set-webhook")
-async def set_webhook():
-    if not WEBHOOK_URL:
-        return {"ok": False, "error": "WEBHOOK_URL yo'q"}
-    await bot.delete_webhook(drop_pending_updates=True)
-    await bot.set_webhook(url=f"{WEBHOOK_URL.rstrip('/')}/webhook")
-    return {"ok": True, "url": f"{WEBHOOK_URL.rstrip('/')}/webhook"}
 
 @app.on_event("startup")
 async def on_startup():
-    # Render ishga tushganda webhookni avtomatik o‘rnatamiz
     if WEBHOOK_URL:
         try:
             await bot.delete_webhook(drop_pending_updates=True)
-            await bot.set_webhook(url=f"{WEBHOOK_URL.rstrip('/')}/webhook")
-            log.info("Webhook set: %s/webhook", WEBHOOK_URL.rstrip('/'))
+            await bot.set_webhook(url=f"{WEBHOOK_URL}/webhook")
+            log.info("Webhook set: %s/webhook", WEBHOOK_URL)
         except Exception as e:
             log.exception("Webhook set failed: %s", e)
 
-
-# ======================= LOCAL RUN (ixtiyoriy) ==============
-# Lokal sinov: uvicorn main:app --host 0.0.0.0 --port 8000
+# Lokal test uchun: uvicorn main:app --host 0.0.0.0 --port 8000
 if __name__ == "__main__":
     uvicorn.run("main:app", host="0.0.0.0", port=int(os.getenv("PORT", 10000)))
