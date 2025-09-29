@@ -20,7 +20,7 @@ from aiogram.fsm.state import StatesGroup, State
 from fastapi import FastAPI, Request
 import uvicorn
 
-# ================== ENV ==================
+# ---------------------- Env ----------------------
 load_dotenv()
 BOT_TOKEN     = os.getenv("BOT_TOKEN")
 ADMIN_PHONE   = os.getenv("ADMIN_PHONE", "+998901234567")
@@ -28,13 +28,13 @@ ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID")  # ixtiyoriy (user ID yoki kanal ID)
 WEBHOOK_URL   = os.getenv("WEBHOOK_URL")    # masalan: https://davontaksibot-3.onrender.com
 
 if not BOT_TOKEN:
-    raise RuntimeError("BOT_TOKEN yo'q! Render Environment Variablesga qo'shing.")
+    raise RuntimeError("BOT_TOKEN yo'q. Environment o'zgaruvchilarini tekshiring.")
 
-# ================== LOGGING ==================
+# ---------------------- Logging ------------------
 logging.basicConfig(level=logging.INFO)
-log = logging.getLogger("davon-taxi-bot")
+log = logging.getLogger("davon-taksi-bot")
 
-# ================== DB ==================
+# ---------------------- DB -----------------------
 DB_PATH = "orders.db"
 
 def init_db():
@@ -56,24 +56,23 @@ def init_db():
             created_at INTEGER
         );
         """)
-
 init_db()
 
-# ================== BOT / DP ==================
+# ---------------------- Bot/DP -------------------
 bot = Bot(BOT_TOKEN)
 dp  = Dispatcher(storage=MemoryStorage())
 
-# ================== STATES ==================
+# ---------------------- States -------------------
 class OrderForm(StatesGroup):
     phone         = State()
     route_from    = State()
     from_district = State()
     route_to      = State()
     to_district   = State()
-    choice        = State()   # odam soni yoki "pochta bor"
+    choice        = State()   # odam soni yoki "Pochta bor"
     note          = State()   # faqat odam tanlanganda
 
-# ================== KEYBOARDS ==================
+# ---------------------- Keyboards ----------------
 BACK = "🔙 Орқага"
 
 def kb_request_phone():
@@ -85,21 +84,20 @@ def kb_request_phone():
         resize_keyboard=True
     )
 
-CITIES = ["Тошкент", "Қўқон"]  # faqat shu ikkitasi
+# Faqat shu 2 shahar, siz so‘ragancha:
+CITIES = ["Тошкент", "Қўқон"]
 
 def kb_cities():
-    rows = [
-        [KeyboardButton(text="Тошкент")],
-        [KeyboardButton(text="Қўқон")],
-        [KeyboardButton(text=BACK)],
-    ]
+    rows = [[KeyboardButton(text="Тошкент")],
+            [KeyboardButton(text="Қўқон")],
+            [KeyboardButton(text=BACK)]]
     return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
 
 def kb_choice():
     rows = [
         [KeyboardButton(text="1"), KeyboardButton(text="2"), KeyboardButton(text="3")],
         [KeyboardButton(text="4"), KeyboardButton(text="5+")],
-        [KeyboardButton(text="📦 Почта бор")],  # "Фақат юк" o‘rniga
+        [KeyboardButton(text="📦 Почта бор")],  # oldingi "Фақат юк" o‘rniga
         [KeyboardButton(text=BACK)],
     ]
     return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
@@ -107,7 +105,7 @@ def kb_choice():
 def kb_back_only():
     return ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text=BACK)]], resize_keyboard=True)
 
-# ================== VALIDATORS ==================
+# ---------------------- Validators ----------------
 PHONE_RE = re.compile(r"^\+?\d{7,15}$")
 
 def normalize_phone(s: str) -> str:
@@ -152,7 +150,7 @@ def trim_district(s: str) -> str | None:
         return s
     return None
 
-# ================== SAVE / NOTIFY ==================
+# ---------------------- Save / Notify -------------
 async def save_order_safe(m: Message, data: dict):
     try:
         with closing(sqlite3.connect(DB_PATH)) as conn, conn:
@@ -212,7 +210,7 @@ async def finalize(m: Message, state: FSMContext):
     await m.answer(confirm, reply_markup=ReplyKeyboardRemove())
     await state.clear()
 
-# ================== HANDLERS ==================
+# ---------------------- Handlers -------------------
 @dp.message(CommandStart())
 async def cmd_start(m: Message, state: FSMContext):
     await state.clear()
@@ -358,32 +356,37 @@ async def note_step(m: Message, state: FSMContext):
 
     note = "-" if txt == "-" else trim_note(txt)
     if note is None:
-        await m.answer("❗️ Изоҳ жуда қисқа/узун. «-» деб ёзсангиз ҳам бўлади.", reply_markup=kb_back_only())
+        await m.answer("❗️ Изоҳ жуда қисқа/узун. «-» деб ёzсангиз ҳам бўлади.", reply_markup=kb_back_only())
         return
 
     await state.update_data(note=note)
     await finalize(m, state)
 
-# ================== FASTAPI (webhook) ==================
+# ---------------------- FastAPI -------------------
 app = FastAPI()
 
 @app.get("/")
-def home():
+def root():
     return {"status": "ok", "service": "davon-taksi-bot"}
 
 @app.get("/health")
 def health():
-    return {"ok": True}
+    return {"status": "ok", "service": "davon-taksi-bot"}
 
 @app.post("/webhook")
 async def telegram_webhook(request: Request):
-    try:
-        data = await request.json()
-        update = Update(**data)
-        await dp.feed_update(bot, update)
-    except Exception as e:
-        log.exception("Webhook error: %s", e)
+    data = await request.json()
+    update = Update(**data)
+    await dp.feed_update(bot, update)
     return {"ok": True}
+
+@app.post("/set-webhook")
+async def set_webhook():
+    if not WEBHOOK_URL:
+        return {"ok": False, "error": "WEBHOOK_URL yo'q"}
+    await bot.delete_webhook(drop_pending_updates=True)
+    await bot.set_webhook(url=f"{WEBHOOK_URL}/webhook")
+    return {"ok": True, "url": f"{WEBHOOK_URL}/webhook"}
 
 @app.on_event("startup")
 async def on_startup():
@@ -395,6 +398,6 @@ async def on_startup():
         except Exception as e:
             log.exception("Webhook set failed: %s", e)
 
-# Lokal test uchun: uvicorn main:app --host 0.0.0.0 --port 8000
+# Lokal test uchun:
 if __name__ == "__main__":
     uvicorn.run("main:app", host="0.0.0.0", port=int(os.getenv("PORT", 10000)))
