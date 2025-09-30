@@ -5,36 +5,33 @@ import sqlite3
 import asyncio
 import logging
 from contextlib import closing
+from typing import List
 
 from dotenv import load_dotenv
-
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import CommandStart, Command
 from aiogram.types import (
-    Message, ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove, Update
+    Message, ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove
 )
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import StatesGroup, State
 
-from fastapi import FastAPI, Request
-import uvicorn
 
-# ---------------------- Env ----------------------
+# ================== ENV ==================
 load_dotenv()
 BOT_TOKEN     = os.getenv("BOT_TOKEN")
 ADMIN_PHONE   = os.getenv("ADMIN_PHONE", "+998901234567")
-ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID")  # ixtiyoriy (user ID yoki kanal ID)
-WEBHOOK_URL   = os.getenv("WEBHOOK_URL")    # masalan: https://davontaksibot-3.onrender.com
+ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID")  # ixtiyoriy
 
 if not BOT_TOKEN:
-    raise RuntimeError("BOT_TOKEN yo'q. Environment o'zgaruvchilarini tekshiring.")
+    raise RuntimeError("BOT_TOKEN yo'q. .env faylini to'ldiring!")
 
-# ---------------------- Logging ------------------
+# ================== LOG ==================
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("davon-taksi-bot")
 
-# ---------------------- DB -----------------------
+# ================== DB ==================
 DB_PATH = "orders.db"
 
 def init_db():
@@ -58,22 +55,23 @@ def init_db():
         """)
 init_db()
 
-# ---------------------- Bot/DP -------------------
+# ================== BOT/DP ==================
 bot = Bot(BOT_TOKEN)
 dp  = Dispatcher(storage=MemoryStorage())
 
-# ---------------------- States -------------------
+# ================== STATES ==================
 class OrderForm(StatesGroup):
     phone         = State()
     route_from    = State()
     from_district = State()
     route_to      = State()
     to_district   = State()
-    choice        = State()   # odam soni yoki "Pochta bor"
-    note          = State()   # faqat odam tanlanganda
+    choice        = State()   # odam soni yoki “pochta bor”
 
-# ---------------------- Keyboards ----------------
+# ================== TEXT & KBs ==================
 BACK = "🔙 Орқага"
+NEXT = "➡️ Кейинги"
+PREV = "⬅️ Олдинги"
 
 def kb_request_phone():
     return ReplyKeyboardMarkup(
@@ -84,7 +82,6 @@ def kb_request_phone():
         resize_keyboard=True
     )
 
-# Faqat shu 2 shahar, siz so‘ragancha:
 CITIES = ["Тошкент", "Қўқон"]
 
 def kb_cities():
@@ -97,15 +94,15 @@ def kb_choice():
     rows = [
         [KeyboardButton(text="1"), KeyboardButton(text="2"), KeyboardButton(text="3")],
         [KeyboardButton(text="4"), KeyboardButton(text="5+")],
-        [KeyboardButton(text="📦 Почта бор")],  # oldingi "Фақат юк" o‘rniga
-        [KeyboardButton(text=BACK)],
+        [KeyboardButton(text="📦 Почта бор")],
+        [KeyboardButton(text=BACK)]
     ]
     return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
 
 def kb_back_only():
     return ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text=BACK)]], resize_keyboard=True)
 
-# ---------------------- Validators ----------------
+# ================== VALIDATION ==================
 PHONE_RE = re.compile(r"^\+?\d{7,15}$")
 
 def normalize_phone(s: str) -> str:
@@ -123,7 +120,7 @@ def is_valid_phone(s: str) -> bool:
 
 def looks_like_cargo_only(text: str) -> bool:
     t = (text or "").lower()
-    return ("почта" in t) or ("pocta" in t) or (t == "📦 почта бор".lower())
+    return ("почта" in t) or (t == "📦 почта бор".lower())
 
 def people_to_int(s: str):
     allowed = {"1", "2", "3", "4", "5+"}
@@ -131,26 +128,66 @@ def people_to_int(s: str):
         return None
     return 5 if s.endswith("+") else int(s)
 
-def trim_note(s: str) -> str | None:
-    if s is None:
-        return None
-    s = s.strip()
-    if not s:
-        return None
-    if len(s) > 350:
-        return None
-    return s
+# ================== DISTRICTS ==================
+QOQON_DISTRICTS: List[str] = [
+    "Қўқон шахар","Янгибозор/Опт","Янгибозор 65","Навоий","Урганжибоғ","Янгичорсу","Чорсу",
+    "Космонавт","Химик","Вокзал","Бабушкин","Тўҳлимерган","Дегрезлик","Гор/Ҳокимият",
+    "Гор/Дилшод","Гор больница","Чархий","Ғозиёғлиқ","Романка","Азиз тепа","Ғишткўприк",
+    "Спортивный","Водоканал","40 лет","Зелённый","ЧПК","Гор. отдель","Большевик",
+    "Ғиштли масжид","Минг тут","Автовокзал","МЖК","Калвак","Арчазор","Горгаз","Шиша бозор",
+    "Саодат масжиди","Тулабой","Данғара","Учкўприк","Бака чорсу","Динам","Сарботир",
+    "Найманча","Мяс комбинат","Мел комбинат","Городской","Айрилиш","10 автобаза",
+    "Пед колледж","Ипак йўли","Ярмарка","Авғонбоқ","Охак бозор","Автодарож","Городок",
+    "Ойим қишлоқ","Аерапорт","Қўқонбой","Оқ жар",
+]
 
-def trim_district(s: str) -> str | None:
-    if s is None:
-        return None
-    s = s.strip()
-    # sodda tekshiruv: 2..60 belgi
-    if 2 <= len(s) <= 60:
-        return s
-    return None
+TOSHKENT_DISTRICTS: List[str] = [
+    "Абу сахий","Авиасозлар 22","Авиасозлар 4","Аерапорт","Ахмад","Ахмад олтин жужа","Алгаритим",
+    "Алмалик","Амир Темур сквер","Ангрен","Ашхабод боғи","Бек барака","Беруний Метро","Битонка",
+    "Болалар миллий тиббиёт","Буюк ипак йули метро","ВОДНИК","Ғишт кўприк чегара","Ғофур Ғулом метро",
+    "Ғунча","Дўстлик метро","Еркин мост","Жангох","Жарарик","Зангота Зиёратгоҳ","Жоме масжид",
+    "Ибн сино 1","Ипадром","Камолон","Кардиалогия маркази","Кафе квартал","Кафедра... (йўқ экан)",
+    "Келес","Корасув","Косманавтлар метро","Кока кола завод","Куйлюк 1","Куйлюк 2","Куйлюк 4",
+    "Куйлюк 5","Куйлюк 6","Курувчи","Миробод Бозори","Миробод тумани","Мирзо Улугбек","Минор метро",
+    "Минг урик","Маъруф ота масжиди","Машинасозлар метро","Межик ситий","Миллий боғ метро",
+    "Мустақиллик майдони","Навоий куча","Некст маал","Олмазор","Олмалик","Охангарон","Олой бозори",
+    "Олим полвон","Панелний","Паркент Бозори","Паркент тумани","Перевал","Рохат","Сағбон","Себзор",
+    "Сергили","Сергили 6","Северный вогзал","Солношка","Собир Рахимов","Тахтапул","Ташкент ситий",
+    "ТТЗ бозор","Фаргона йули","Фарход бозори","Фууд ситий","Хадра майдони","Халқлар дўстлиги",
+    "Хайвонот боги","Хумо Арена","Чигатой","Чилонзор","Чилонзор","Чирчиқ","Чорсу","Чупон ота",
+    "Шайхон Тохур","Шаршара","Шота Руставили","Янги бозор","Янги йул","Янги Чош Тепа",
+    "Янги обод бозор","Янгиобод бозори","Яланғоч","Яшинобод тумани","Яккасарой","Ёшлик метро",
+    "Юнусобод","Южный вогзал","Қафе квартал","Қушбеги","Қўйлиқ 5","Центр Бешкозон","Центрланый парк"
+]
 
-# ---------------------- Save / Notify -------------
+def districts_for_city(city: str) -> List[str]:
+    return TOSHKENT_DISTRICTS if city == "Тошкент" else QOQON_DISTRICTS
+
+def chunk(lst: List[str], n: int) -> List[List[str]]:
+    return [lst[i:i+n] for i in range(0, len(lst), n)]
+
+def kb_districts(city: str, page: int = 1, per_page: int = 8, cols: int = 2):
+    data = districts_for_city(city)
+    total_pages = max(1, (len(data) + per_page - 1) // per_page)
+    page = max(1, min(page, total_pages))
+
+    start = (page - 1) * per_page
+    items = data[start:start + per_page]
+    rows = []
+    for r in chunk(items, cols):
+        rows.append([KeyboardButton(text=x) for x in r])
+
+    nav = []
+    if page > 1:
+        nav.append(KeyboardButton(text=PREV))
+    nav.append(KeyboardButton(text=f"{page}/{total_pages}"))
+    if page < total_pages:
+        nav.append(KeyboardButton(text=NEXT))
+    rows.append(nav)
+    rows.append([KeyboardButton(text=BACK)])
+    return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
+
+# ================== SAVE / NOTIFY ==================
 async def save_order_safe(m: Message, data: dict):
     try:
         with closing(sqlite3.connect(DB_PATH)) as conn, conn:
@@ -202,15 +239,14 @@ async def finalize(m: Message, state: FSMContext):
         f"🚖 Йўналиш: {data.get('route_from')} ({data.get('from_district')}) → "
         f"{data.get('route_to')} ({data.get('to_district')})\n"
         f"👥 Одам: {data.get('people') or '-'}\n"
-        f"📦 Почта: {data.get('cargo')}\n"
-        f"📝 Изоҳ: {data.get('note', '-')}\n\n"
-        f"🧑‍💼 Оператор телефон рақами: {ADMIN_PHONE}\n"
+        f"📦 Почта: {data.get('cargo')}\n\n"
+        f"🧑‍💼 Оператор рақами: {ADMIN_PHONE}\n"
         "Янги буюртма учун /start ни босинг."
     )
     await m.answer(confirm, reply_markup=ReplyKeyboardRemove())
     await state.clear()
 
-# ---------------------- Handlers -------------------
+# ================== HANDLERS ==================
 @dp.message(CommandStart())
 async def cmd_start(m: Message, state: FSMContext):
     await state.clear()
@@ -226,15 +262,14 @@ async def cmd_start(m: Message, state: FSMContext):
 @dp.message(Command("cancel"))
 async def cmd_cancel(m: Message, state: FSMContext):
     await state.clear()
-    await m.answer("❌ Бекор қилинди. Бошидан /start ни босинг.", reply_markup=ReplyKeyboardRemove())
+    await m.answer("❌ Бекор қилинди. /start", reply_markup=ReplyKeyboardRemove())
 
 # 1) Telefon
 @dp.message(OrderForm.phone, F.contact)
 async def phone_from_contact(m: Message, state: FSMContext):
     ph = normalize_phone(m.contact.phone_number)
     if not is_valid_phone(ph):
-        await m.answer("❗️ Контактдан келган телефон нотўғри. Қайта улашинг ёки қўлда ёзинг.",
-                       reply_markup=kb_request_phone())
+        await m.answer("❗️ Телефон нотўғри. Қайта улашинг ёки қўлда ёзинг.", reply_markup=kb_request_phone())
         return
     await state.update_data(phone=ph)
     await m.answer("📍 Қаердан жўнайсиз? Шаҳарни танланг.", reply_markup=kb_cities())
@@ -262,23 +297,39 @@ async def select_from_city(m: Message, state: FSMContext):
     if txt not in CITIES:
         await m.answer("❗️ Илтимос, рўйхатдан танланг.", reply_markup=kb_cities())
         return
-    await state.update_data(route_from=txt)
-    await m.answer("🏙 Тошкент/Қўқоннинг қайси тумани? (матн билан ёзинг)", reply_markup=kb_back_only())
+
+    await state.update_data(route_from=txt, from_page=1)
+    await m.answer(f"🏙 {txt} — ILTIMOS HUDUDNI TANLANG!", reply_markup=kb_districts(txt, page=1))
     await state.set_state(OrderForm.from_district)
 
-# 3) From District
+# 3) From District (paging)
 @dp.message(OrderForm.from_district)
 async def from_district_step(m: Message, state: FSMContext):
     txt = (m.text or "").strip()
+    data = await state.get_data()
+    city = data.get("route_from")
+    page = int(data.get("from_page", 1))
+
     if txt == BACK:
         await m.answer("📍 Қаердан жўнайсиз? Шаҳарни танланг.", reply_markup=kb_cities())
         await state.set_state(OrderForm.route_from)
         return
-    dist = trim_district(txt)
-    if dist is None:
-        await m.answer("❗️ Туман номи 2–60 белгидан iborat bo‘lsin. Қайта киритинг.", reply_markup=kb_back_only())
+    if txt == NEXT:
+        page += 1
+        await state.update_data(from_page=page)
+        await m.answer(f"🏙 {city} — ILTIMOS HUDUDNI TANLANG!", reply_markup=kb_districts(city, page))
         return
-    await state.update_data(from_district=dist)
+    if txt == PREV:
+        page = max(1, page - 1)
+        await state.update_data(from_page=page)
+        await m.answer(f"🏙 {city} — ILTIMOS HUDUDNI TANLANG!", reply_markup=kb_districts(city, page))
+        return
+
+    if txt not in districts_for_city(city):
+        await m.answer("❗️ Илтимос, тугмалардан танланг.", reply_markup=kb_districts(city, page))
+        return
+
+    await state.update_data(from_district=txt)
     await m.answer("📍 Қаерга борасиз? Шаҳарни танланг.", reply_markup=kb_cities())
     await state.set_state(OrderForm.route_to)
 
@@ -286,43 +337,64 @@ async def from_district_step(m: Message, state: FSMContext):
 @dp.message(OrderForm.route_to)
 async def select_to_city(m: Message, state: FSMContext):
     txt = (m.text or "").strip()
+    data = await state.get_data()
     if txt == BACK:
-        await m.answer("🏙 Қайси тумандан жўнайсиз? (матн)", reply_markup=kb_back_only())
+        city = data.get("route_from")
+        page = int(data.get("from_page", 1))
+        await m.answer(f"🏙 {city} — ILTIMOS HUDUDNI TANLANG!", reply_markup=kb_districts(city, page))
         await state.set_state(OrderForm.from_district)
         return
     if txt not in CITIES:
         await m.answer("❗️ Илтимос, рўйхатдан танланг.", reply_markup=kb_cities())
         return
-    data = await state.get_data()
     if data.get("route_from") == txt:
         await m.answer("❗️ Жўнаш ва бориш шаҳари бир хил бўлмасин. Бошқа шаҳарни танланг.", reply_markup=kb_cities())
         return
-    await state.update_data(route_to=txt)
-    await m.answer("🏙 Бориш тумани қайси? (матн билан ёзинг)", reply_markup=kb_back_only())
+
+    await state.update_data(route_to=txt, to_page=1)
+    await m.answer(f"🏙 {txt} — ILTIMOS HUDUDNI TANLANG!", reply_markup=kb_districts(txt, page=1))
     await state.set_state(OrderForm.to_district)
 
-# 5) To District
+# 5) To District (paging)
 @dp.message(OrderForm.to_district)
 async def to_district_step(m: Message, state: FSMContext):
     txt = (m.text or "").strip()
+    data = await state.get_data()
+    city = data.get("route_to")
+    page = int(data.get("to_page", 1))
+
     if txt == BACK:
         await m.answer("📍 Қаерга борасиз? Шаҳарни танланг.", reply_markup=kb_cities())
         await state.set_state(OrderForm.route_to)
         return
-    dist = trim_district(txt)
-    if dist is None:
-        await m.answer("❗️ Туман номи 2–60 белгидан iborat bo‘lsin. Қайта киритинг.", reply_markup=kb_back_only())
+    if txt == NEXT:
+        page += 1
+        await state.update_data(to_page=page)
+        await m.answer(f"🏙 {city} — ILTIMOS HUDUDNI TANLANG!", reply_markup=kb_districts(city, page))
         return
-    await state.update_data(to_district=dist)
+    if txt == PREV:
+        page = max(1, page - 1)
+        await state.update_data(to_page=page)
+        await m.answer(f"🏙 {city} — ILTIMOS HUDUDNI TANЛАНГ!", reply_markup=kb_districts(city, page))
+        return
+
+    if txt not in districts_for_city(city):
+        await m.answer("❗️ Илтимос, тугмалардан танланг.", reply_markup=kb_districts(city, page))
+        return
+
+    await state.update_data(to_district=txt)
     await m.answer("👥 Одам сонини танланг ёки «📦 Почта бор» ни босинг:", reply_markup=kb_choice())
     await state.set_state(OrderForm.choice)
 
-# 6) Choice: people or cargo
+# 6) Choice (izoh bosqichi yo‘q)
 @dp.message(OrderForm.choice)
 async def choice_step(m: Message, state: FSMContext):
     txt = (m.text or "").strip()
     if txt == BACK:
-        await m.answer("🏙 Бориш тумани қайси? (матн)", reply_markup=kb_back_only())
+        data = await state.get_data()
+        city = data.get("route_to")
+        page = int(data.get("to_page", 1))
+        await m.answer(f"🏙 {city} — ILTIMOS HUDUDNI TANLANG!", reply_markup=kb_districts(city, page))
         await state.set_state(OrderForm.to_district)
         return
 
@@ -333,71 +405,21 @@ async def choice_step(m: Message, state: FSMContext):
 
     p = people_to_int(txt)
     if p is None:
-        await m.answer("❗️ Тугмалардан фойдаланинг: 1,2,3,4,5+ ёки «📦 Почта бор».", reply_markup=kb_choice())
+        await m.answer("❗️ 1,2,3,4,5+ ёки «📦 Почта бор».", reply_markup=kb_choice())
         return
 
-    await state.update_data(people=p, cargo="Йўқ")
-    await m.answer("📝 Қўшимча изоҳ (вақт, манзил...). Агар йўқ бўлса, «-» деб ёзинг.", reply_markup=kb_back_only())
-    await state.set_state(OrderForm.note)
-
-# 7) Note
-@dp.message(OrderForm.note)
-async def note_step(m: Message, state: FSMContext):
-    txt = (m.text or "").strip()
-    if txt == BACK:
-        await m.answer("👥 Одам сонини танланг ёки «📦 Почта бор» ни босинг:", reply_markup=kb_choice())
-        await state.set_state(OrderForm.choice)
-        return
-
-    if looks_like_cargo_only(txt):
-        await state.update_data(people=0, cargo="Бор", note="-")
-        await finalize(m, state)
-        return
-
-    note = "-" if txt == "-" else trim_note(txt)
-    if note is None:
-        await m.answer("❗️ Изоҳ жуда қисқа/узун. «-» деб ёzсангиз ҳам бўлади.", reply_markup=kb_back_only())
-        return
-
-    await state.update_data(note=note)
+    await state.update_data(people=p, cargo="Йўқ", note="-")
     await finalize(m, state)
 
-# ---------------------- FastAPI -------------------
-app = FastAPI()
+# ================== RUN (Polling) ==================
+async def main():
+    log.info("Starting polling…")
+    # polling ishlashi uchun — eski webhook bo‘lsa olib tashlaymiz
+    try:
+        await bot.delete_webhook(drop_pending_updates=True)
+    except Exception:
+        pass
+    await dp.start_polling(bot, allowed_updates=["message"])
 
-@app.get("/")
-def root():
-    return {"status": "ok", "service": "davon-taksi-bot"}
-
-@app.get("/health")
-def health():
-    return {"status": "ok", "service": "davon-taksi-bot"}
-
-@app.post("/webhook")
-async def telegram_webhook(request: Request):
-    data = await request.json()
-    update = Update(**data)
-    await dp.feed_update(bot, update)
-    return {"ok": True}
-
-@app.post("/set-webhook")
-async def set_webhook():
-    if not WEBHOOK_URL:
-        return {"ok": False, "error": "WEBHOOK_URL yo'q"}
-    await bot.delete_webhook(drop_pending_updates=True)
-    await bot.set_webhook(url=f"{WEBHOOK_URL}/webhook")
-    return {"ok": True, "url": f"{WEBHOOK_URL}/webhook"}
-
-@app.on_event("startup")
-async def on_startup():
-    if WEBHOOK_URL:
-        try:
-            await bot.delete_webhook(drop_pending_updates=True)
-            await bot.set_webhook(url=f"{WEBHOOK_URL}/webhook")
-            log.info("Webhook set: %s/webhook", WEBHOOK_URL)
-        except Exception as e:
-            log.exception("Webhook set failed: %s", e)
-
-# Lokal test uchun:
 if __name__ == "__main__":
-    uvicorn.run("main:app", host="0.0.0.0", port=int(os.getenv("PORT", 10000)))
+    asyncio.run(main())
