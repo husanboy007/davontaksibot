@@ -24,7 +24,7 @@ from aiogram.fsm.state import StatesGroup, State
 load_dotenv()
 BOT_TOKEN     = os.getenv("BOT_TOKEN")
 ADMIN_PHONE   = os.getenv("ADMIN_PHONE", "+998901234567")
-ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID")  # ixtiyoriy
+ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID")  # ixtiyoriy (gruppa ID)
 
 if not BOT_TOKEN:
     raise RuntimeError("BOT_TOKEN йўқ. .env файлини тўлдиринг!")
@@ -63,7 +63,7 @@ dp  = Dispatcher(storage=MemoryStorage())
 # ============== STATES ==============
 class OrderForm(StatesGroup):
     phone         = State()
-    route_from    = State()      # endi: yo‘nalish jufti tanlanadi (Qo‘qon->Toshkent yoki aksincha)
+    route_from    = State()
     from_district = State()
     to_district   = State()
     choice        = State()
@@ -190,7 +190,7 @@ TOSHKENT_DISTRICTS: List[str] = [
     "Фууд ситий","Хадра майдони","Халқлар дўстлиги","Хайвонот боги","Хумо Арена","Чигатой",
     "Чилонзор","Чилонзор","Чирчиқ","Чорсу","Чупон ота","Шайхон Тохур","Шаршара",
     "Шота Руставили","Янги бозор","Янги йул","Янги Чош Тепа","Янги обод бозор",
-    "Янгиобод бозори","Яланғоч","Яшинобод тумани","Яккасарой","Ёшлик метро","Юнусобод",
+    "Янгиобод бозори","Яланғоч","Яшинобод тумани","Яккасарoy","Ёшлик метро","Юнусобод",
     "Южный вогзал","Қафе квартал","Қушбеги","Қўйлиқ 5","Центр Бешкозон","Центрланый парк",
 ]
 
@@ -264,13 +264,17 @@ async def save_order_safe(m: Message, data: dict):
         log.exception("[DB] Save failed: %s", e)
 
 async def notify_operator_safe(m: Message, data: dict):
+    """
+    Operator (gruppa) xabaridan foydalanuvchi username va ID olib tashlandi.
+    Maxfiylik talabi: faqat kerakli buyurtma tafsilotlari yuboriladi.
+    """
     if not ADMIN_CHAT_ID:
         return
     try:
         txt = (
             "🆕 *Янги буюртма*\n"
-            f"👤 {m.from_user.full_name} @{m.from_user.username or '-'} (ID: {m.from_user.id})\n"
-            f"📞 {data.get('phone')}\n"
+            # 👤 mijoz haqida identifikatsion ma'lumotlar YASHIRILDI (username/ID yo‘q)
+            f"📞 Телефон: {data.get('phone')}\n"
             f"🚖 Йўналиш: {data.get('route_from')} ({data.get('from_district')}) → "
             f"{data.get('route_to')} ({data.get('to_district')})\n"
             f"👥 Одам: {data.get('people') or '-'}\n"
@@ -387,7 +391,6 @@ async def from_district_step(m: Message, state: FSMContext):
         return
 
     await state.update_data(from_district=txt)
-    # Endi borish hududlari (qarama-qarshi shahar) ni ko'rsatamiz
     await render_to_page(m, state, delta=0)
     await state.set_state(OrderForm.to_district)
 
