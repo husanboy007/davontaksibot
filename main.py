@@ -37,6 +37,17 @@ DB_PATH = "orders.db"
 
 def init_db():
     with closing(sqlite3.connect(DB_PATH)) as conn, conn:
+        # foydalanuvchilar ro'yxati
+        conn.execute("""
+        CREATE TABLE IF NOT EXISTS users(
+            tg_user_id INTEGER PRIMARY KEY,
+            full_name  TEXT,
+            username   TEXT,
+            joined_at  INTEGER,
+            last_seen  INTEGER
+        );
+        """)
+        # buyurtmalar
         conn.execute("""
         CREATE TABLE IF NOT EXISTS orders(
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -63,7 +74,7 @@ dp  = Dispatcher(storage=MemoryStorage())
 # ============== STATES ==============
 class OrderForm(StatesGroup):
     phone         = State()
-    route_from    = State()
+    route_from    = State()   # juft yo'nalish tanlanadi
     from_district = State()
     to_district   = State()
     choice        = State()
@@ -80,9 +91,9 @@ WELCOME_TEXT = (
     "бот @husan7006 томонидан ишлаб чиқилди"
 )
 
-PROMPT_ROUTE = "🧭 *Yo'nalishni tanlang.*"
-PROMPT_PICKUP = "🚏 *Qaysi hududdan sizni olib ketamiz?*"
-PROMPT_DROP   = "🏁 *Qaysi hududga borasiz?*"
+PROMPT_ROUTE    = "🧭 *Yo'nalishni tanlang.*"
+PROMPT_PICKUP   = "🚏 *Qaysi hududdan sizni olib ketamiz?*"
+PROMPT_DROP     = "🏁 *Qaysi hududga borasiz?*"
 PROMPT_DISTRICTS = "— ҳудудни танланг!"
 
 def kb_inline_start() -> InlineKeyboardMarkup:
@@ -160,7 +171,7 @@ def norm_city(txt: str) -> str:
     }
     return variants.get(t, txt.strip())
 
-# ============== DISTRICTS (to‘liq) ==============
+# ============== DISTRICTS ==============
 QOQON_DISTRICTS: List[str] = [
     "Қўқон шахар","Янгибозор/Опт","Янгибозор 65","Навоий","Урганжибоғ","Янгичорсу","Чорсу",
     "Космонавт","Химик","Вокзал","Бабушкин","Тўҳлимерган","Дегрезлик","Гор/Ҳокимият",
@@ -265,15 +276,13 @@ async def save_order_safe(m: Message, data: dict):
 
 async def notify_operator_safe(m: Message, data: dict):
     """
-    Operator (gruppa) xabaridan foydalanuvchi username va ID olib tashlandi.
-    Maxfiylik talabi: faqat kerakli buyurtma tafsilotlari yuboriladi.
+    Operator (gruppa) xabarida foydalanuvchi username va ID ko'rinmaydi.
     """
     if not ADMIN_CHAT_ID:
         return
     try:
         txt = (
             "🆕 *Янги буюртма*\n"
-            # 👤 mijoz haqida identifikatsion ma'lumotlar YASHIRILDI (username/ID yo‘q)
             f"📞 Телефон: {data.get('phone')}\n"
             f"🚖 Йўналиш: {data.get('route_from')} ({data.get('from_district')}) → "
             f"{data.get('route_to')} ({data.get('to_district')})\n"
@@ -306,6 +315,22 @@ async def finalize(m: Message, state: FSMContext):
 @dp.message(CommandStart())
 async def cmd_start(m: Message, state: FSMContext):
     await state.clear()
+
+    # foydalanuvchini DBga yozish/yangilash (stats uchun)
+    try:
+        now = int(time.time())
+        with closing(sqlite3.connect(DB_PATH)) as conn, conn:
+            conn.execute("""
+                INSERT INTO users(tg_user_id, full_name, username, joined_at, last_seen)
+                VALUES(?, ?, ?, ?, ?)
+                ON CONFLICT(tg_user_id) DO UPDATE SET
+                    full_name=excluded.full_name,
+                    username=excluded.username,
+                    last_seen=excluded.last_seen
+            """, (m.from_user.id, m.from_user.full_name, m.from_user.username, now, now))
+    except Exception as e:
+        log.exception("[DB] users upsert failed: %s", e)
+
     await m.answer(WELCOME_TEXT, reply_markup=kb_inline_start(), parse_mode="Markdown")
 
 @dp.callback_query(F.data == "go_start")
@@ -443,6 +468,35 @@ async def choice_step(m: Message, state: FSMContext):
 
     await state.update_data(people=p, cargo="Йўқ", note="-")
     await finalize(m, state)
+
+# ============== PUBLIC /stats ==============
+@dp.message(Command("stats"))
+async def cmd_stats(m: Message):
+    try:
+        with closing(sqlite3.connect(DB_PATH)) as conn:
+            cur = conn.cursor()
+            cur.execute("SELECT COUNT(*) FROM users")
+            total = cur.fetchone()[0]
+
+            # bugungi qo'shilganlar (ixtiyoriy)
+            now = int(time.time())
+            start_of_day = now - (now % 86400)
+            cur.execute("SELECT COUNT(*) FROM users WHERE joined_at >= ?", (start_of_day,))
+            today = cur.fetchone()[0]
+
+        await m.answer(
+            f"📊 Bot statistikasi:\n"
+            f"👥 Umumiy foydalanuvchilar: {total} ta\n"
+            f"🆕 Bugun qo‘shilganlar: {today} ta"
+        )
+    except Exception as e:
+        log.exception("[STATS] failed: %s", e)
+        await m.answer("❗️ Statistika vaqtincha mavjud emas.")
+
+# (ixtiyoriy) alias
+@dp.message(Command("users"))
+async def cmd_users(m: Message):
+    await cmd_stats(m)
 
 # ============== RUN (Polling) ==============
 async def main():
