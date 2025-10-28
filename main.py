@@ -11,6 +11,7 @@ from typing import List, Optional
 from dotenv import load_dotenv
 from aiogram import Bot, Dispatcher, F
 from aiogram.client.default import DefaultBotProperties
+from aiogram.enums import ParseMode
 from aiogram.filters import CommandStart, Command
 from aiogram.types import (
     Message, CallbackQuery, BotCommand,
@@ -73,7 +74,7 @@ def init_db():
 init_db()
 
 # ================= BOT/DP =================
-bot = Bot(BOT_TOKEN, default=DefaultBotProperties(parse_mode="Markdown"))
+bot = Bot(BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.MARKDOWN))
 dp  = Dispatcher(storage=MemoryStorage())
 
 async def setup_commands():
@@ -442,6 +443,11 @@ async def other_person_phone(m: Message, state: FSMContext):
                    reply_markup=kb_request_phone())
 
 # --- phone collection ---
+@dp.message(OrderForm.phone, F.text == BACK)
+async def phone_back_to_menu(m: Message, state: FSMContext):
+    await state.clear()
+    await m.answer("↩️ Menyu: /start yoki /new", reply_markup=ReplyKeyboardRemove())
+
 @dp.message(OrderForm.phone, F.contact)
 async def phone_from_contact(m: Message, state: FSMContext):
     ph = normalize_phone(m.contact.phone_number)
@@ -574,19 +580,23 @@ async def cmd_help(m: Message):
 
 # ================= ADMIN =================
 def _is_admin(uid: int) -> bool:
-    try: return ADMIN_USER_ID and int(ADMIN_USER_ID) == int(uid)
-    except Exception: return False
+    try:
+        return bool(ADMIN_USER_ID) and int(ADMIN_USER_ID) == int(uid)
+    except Exception:
+        return False
 
 @dp.message(Command("broadcast"))
 async def cmd_broadcast(m: Message):
     if not _is_admin(m.from_user.id): return
     text = m.text.partition(" ")[2].strip()
     if not text:
-        await m.answer("Foydalanish: `/broadcast matn`", parse_mode="Markdown"); return
+        await m.answer("Foydalanish: `/broadcast matn`", parse_mode=ParseMode.MARKDOWN); return
     sent = fail = 0
     for uid in all_user_ids():
-        try: await bot.send_message(uid, text); sent += 1
-        except Exception: fail += 1
+        try:
+            await bot.send_message(uid, text); sent += 1
+        except Exception:
+            fail += 1
     await m.answer(f"Yuborildi: {sent}  |  Xato: {fail}")
 
 @dp.message(Command("announce"))
@@ -595,26 +605,33 @@ async def cmd_announce(m: Message):
     text = ANNOUNCE_TEXT
     sent = fail = 0
     for uid in all_user_ids():
-        try: await bot.send_message(uid, text); sent += 1
-        except Exception: fail += 1
+        try:
+            await bot.send_message(uid, text); sent += 1
+        except Exception:
+            fail += 1
     await m.answer(f"ANNOUNCE yuborildi: {sent}  |  Xato: {fail}")
 
 # ================= RUN =================
 async def main():
+    # Webhook ↔ Polling konflikti bo‘lmasligi uchun webhookni o‘chirib qo‘yamiz:
     try:
         await bot.delete_webhook(drop_pending_updates=True)
     except Exception:
         pass
+
     await setup_commands()
 
     if AUTO_ANNOUNCE == "1":
         try:
             for uid in all_user_ids():
-                try: await bot.send_message(uid, ANNOUNCE_TEXT)
-                except Exception: pass
+                try:
+                    await bot.send_message(uid, ANNOUNCE_TEXT)
+                except Exception:
+                    pass
         except Exception as e:
             log.exception("[AUTO_ANNOUNCE] failed: %s", e)
 
+    # Faqat polling ishlatiladi
     await dp.start_polling(bot, allowed_updates=["message", "callback_query"])
 
 if __name__ == "__main__":
